@@ -62,8 +62,21 @@ def load_model():
 # ─── Think Tag Stripping ────────────────────────────────────────────────────
 
 def strip_think_tags(text):
-    """Remove <think>...</think> blocks from Qwen's reasoning output."""
-    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+    """Remove think-block content from Qwen's reasoning output.
+
+    Handles two patterns:
+    1. Complete block  — <think>…</think> present in full_text.
+    2. Orphan close    — generation prompt already prepended <think>, so
+       full_text starts with the *content* of the think block (no opening
+       tag) and contains only </think> as the separator.  Strip everything
+       from the start of the string up to and including the first </think>.
+    """
+    # Pattern 1: remove complete <think>…</think> blocks
+    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # Pattern 2: remove leading orphan thinking content before </think>
+    if '</think>' in cleaned:
+        cleaned = cleaned[cleaned.index('</think>') + len('</think>'):]
+    cleaned = cleaned.strip()
     return cleaned if cleaned else text
 
 
@@ -218,23 +231,38 @@ def convert_messages(body):
 
 
 def tokenize_messages(messages, tools=None):
-    """Apply the model's chat template and return token ids."""
-    kwargs = {"add_generation_prompt": True, "tokenize": True}
+    """Apply the model's chat template and return token ids.
+
+    When tools are provided we attempt kwargs in decreasing order of preference:
+      1. tools + enable_thinking=False  — Qwen3 family: disabling thinking mode
+         forces the model to emit <tool_call> directly instead of writing a
+         natural-language plan inside <think>…</think> and then stopping.
+      2. tools only                     — models that accept tools but not
+         enable_thinking (e.g. Qwen2.5, other OpenAI-compatible templates).
+      3. no tools                       — last-resort; model loses tool context
+         but at least generates a response.
+    """
+    base_kwargs = {"add_generation_prompt": True, "tokenize": True}
+
+    # Build the ordered list of kwargs to try
+    attempts = []
     if tools:
-        kwargs["tools"] = tools
-    try:
-        return tokenizer.apply_chat_template(messages, **kwargs)
-    except TypeError as e:
-        # Tokenizer template doesn't accept 'tools' — retry without it
-        log(f"  Warning: chat template rejected tools param ({e}), retrying without tools")
+        attempts.append({**base_kwargs, "tools": tools, "enable_thinking": False})
+        attempts.append({**base_kwargs, "tools": tools})
+    attempts.append(base_kwargs)
+
+    for i, kwargs in enumerate(attempts):
         try:
-            return tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=True
-            )
-        except Exception as e2:
-            log(f"  Warning: chat template failed ({e2}), falling back to plain text")
-    except Exception as e:
-        log(f"  Warning: chat template failed ({e}), falling back to plain text")
+            return tokenizer.apply_chat_template(messages, **kwargs)
+        except TypeError as e:
+            if i < len(attempts) - 1:
+                log(f"  Warning: chat template rejected kwargs ({e}), trying simpler config")
+                continue
+            log(f"  Warning: chat template failed ({e}), falling back to plain text")
+            break
+        except Exception as e:
+            log(f"  Warning: chat template failed ({e}), falling back to plain text")
+            break
 
     # Last-resort plain-text fallback
     text = "\n".join(f"{m['role']}: {m.get('content', '')}" for m in messages)
@@ -262,7 +290,7 @@ def run_generation(body):
     Returns (full_text, gen_tokens, prompt_tokens, finish_reason).
     """
     messages = convert_messages(body)
-    tools = convert_tools_to_openai(body["tools"]) if body.get("tools") else None
+    tools = convert_tools_to_openai(body.get("tools")) if body.get("tools") else None
     token_ids = tokenize_messages(messages, tools=tools)
     prompt_tokens = len(token_ids)
     log(f"  Prompt: {prompt_tokens} tokens")
@@ -291,7 +319,7 @@ def run_generation(body):
     elapsed = time.time() - t0
     tps = gen_tokens / elapsed if elapsed > 0 else 0
     log(f"  Generated: {gen_tokens} tokens in {elapsed:.1f}s ({tps:.1f} tok/s)")
-    log(f"  Raw output: {repr(full_text[:120])}")
+    log(f"  Raw output ({len(full_text)} chars): {repr(full_text[:500])}")
     return full_text, gen_tokens, prompt_tokens, finish_reason
 
 
