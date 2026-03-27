@@ -300,7 +300,9 @@ def convert_messages(body):
                     "type": "function",
                     "function": {
                         "name": b.get("name", ""),
-                        "arguments": json.dumps(b.get("input", {})),
+                        # Chat templates for Qwen/OpenAI-style tool calls expect a
+                        # mapping here, not a JSON string.
+                        "arguments": b.get("input", {}) if isinstance(b.get("input", {}), dict) else {},
                     },
                 }
                 for b in tool_use_blocks
