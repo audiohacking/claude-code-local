@@ -88,11 +88,12 @@ def parse_tool_calls(text):
     """Parse tool calls from Qwen's <tool_call>...</tool_call> output format."""
     tool_calls = []
     for match in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', text, re.DOTALL):
+        raw = match.group(1)
         try:
-            data = json.loads(match.group(1))
+            data = json.loads(raw)
             name = data.get("name", "")
             if not name:
-                log("  Warning: skipping tool call with missing or empty name")
+                log(f"  Warning: skipping tool call with missing name: {raw[:80]}")
                 continue
             tool_calls.append({
                 "type": "tool_use",
@@ -100,16 +101,23 @@ def parse_tool_calls(text):
                 "name": name,
                 "input": data.get("arguments", data.get("parameters", {})),
             })
-        except (json.JSONDecodeError, ValueError):
-            pass
+        except (json.JSONDecodeError, ValueError) as e:
+            log(f"  Warning: failed to parse tool call JSON ({e}): {raw[:80]}")
     return tool_calls
 
 
 def extract_text_and_tools(raw_text):
-    """Return (clean_text, tool_calls) from raw model output."""
+    """Return (clean_text, tool_calls) from raw model output.
+
+    Tool calls are extracted from the raw text *before* think-tag stripping so
+    that <tool_call> blocks placed inside a second <think> segment by Qwen3.5
+    (a common pattern: think → plan text → think-with-tool-call) are not
+    silently discarded by the re.sub that removes <think>…</think>.
+    """
+    # Parse from raw FIRST so tool calls inside any <think> block are captured.
+    tool_calls = parse_tool_calls(raw_text)
+    # Clean the visible text: strip think tags, remove tool call XML, etc.
     text = clean_response(raw_text)
-    tool_calls = parse_tool_calls(text)
-    # Strip tool call XML from the visible text
     clean_text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL).strip()
     return clean_text, tool_calls
 
@@ -283,6 +291,7 @@ def run_generation(body):
     elapsed = time.time() - t0
     tps = gen_tokens / elapsed if elapsed > 0 else 0
     log(f"  Generated: {gen_tokens} tokens in {elapsed:.1f}s ({tps:.1f} tok/s)")
+    log(f"  Raw output: {repr(full_text[:120])}")
     return full_text, gen_tokens, prompt_tokens, finish_reason
 
 
@@ -368,7 +377,8 @@ def generate_response_stream(handler, body):
     if clean_text:
         text_to_emit = clean_text
     elif tool_calls:
-        text_to_emit = ""          # tool-only response; no visible text
+        # tool-only response; no visible text
+        text_to_emit = ""
     else:
         text_to_emit = "(No output)"
     send_sse(handler, "content_block_start", {
@@ -463,10 +473,13 @@ class AnthropicHandler(BaseHTTPRequestHandler):
         if path in ("/v1/messages", "/messages"):
             if streaming:
                 try:
+                    # Close connection after SSE events so HTTP/1.1 clients
+                    # don't hang waiting for more data after message_stop.
+                    self.close_connection = True
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "keep-alive")
+                    self.send_header("Connection", "close")
                     self.end_headers()
                     generate_response_stream(self, body)
                 except Exception as e:
