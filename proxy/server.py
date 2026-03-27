@@ -98,10 +98,65 @@ def clean_response(text):
 # ─── Tool Call Parsing ───────────────────────────────────────────────────────
 
 def parse_tool_calls(text):
-    """Parse tool calls from Qwen's <tool_call>...</tool_call> output format."""
+    """Parse tool calls from model output.
+
+    Handles:
+      - Qwen XML: <function=Name><parameter=key>value</parameter></function>
+      - Qwen JSON tags: <tool_call>{"name":"...","arguments":{...}}</tool_call>
+      - Bare JSON function-call objects.
+    """
     tool_calls = []
-    for match in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', text, re.DOTALL):
-        raw = match.group(1)
+
+    # 1) Prefer XML function style used by Qwen chat templates.
+    for func_match in re.finditer(r'<function=([A-Za-z0-9_\-]+)>\s*(.*?)\s*</function>', text, re.DOTALL):
+        name = func_match.group(1)
+        params_block = func_match.group(2)
+        args = {}
+        for param_match in re.finditer(r'<parameter=([A-Za-z0-9_\-]+)>\s*(.*?)\s*</parameter>', params_block, re.DOTALL):
+            key = param_match.group(1)
+            raw_value = param_match.group(2).strip()
+            try:
+                args[key] = json.loads(raw_value)
+            except (json.JSONDecodeError, ValueError):
+                args[key] = raw_value
+        tool_calls.append({
+            "type": "tool_use",
+            "id": f"toolu_{uuid.uuid4().hex[:20]}",
+            "name": name,
+            "input": args,
+        })
+
+    if tool_calls:
+        log(f"  Parsed {len(tool_calls)} XML tool call(s)")
+        return tool_calls
+
+    # 2) Fallback to <tool_call>...</tool_call> JSON style.
+    for json_block_match in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', text, re.DOTALL):
+        raw = json_block_match.group(1)
+
+        # Some models wrap XML function calls inside <tool_call>...</tool_call>.
+        nested_xml_calls = []
+        for func_match in re.finditer(r'<function\s*=\s*([^\s>]+)\s*>\s*(.*?)\s*</function>', raw, re.DOTALL):
+            name = func_match.group(1)
+            params_block = func_match.group(2)
+            args = {}
+            for param_match in re.finditer(r'<parameter\s*=\s*([^\s>]+)\s*>\s*(.*?)\s*</parameter>', params_block, re.DOTALL):
+                key = param_match.group(1)
+                raw_value = param_match.group(2).strip()
+                try:
+                    args[key] = json.loads(raw_value)
+                except (json.JSONDecodeError, ValueError):
+                    args[key] = raw_value
+            nested_xml_calls.append({
+                "type": "tool_use",
+                "id": f"toolu_{uuid.uuid4().hex[:20]}",
+                "name": name,
+                "input": args,
+            })
+        if nested_xml_calls:
+            tool_calls.extend(nested_xml_calls)
+            continue
+
         try:
             data = json.loads(raw)
             name = data.get("name", "")
@@ -116,6 +171,38 @@ def parse_tool_calls(text):
             })
         except (json.JSONDecodeError, ValueError) as e:
             log(f"  Warning: failed to parse tool call JSON ({e}): {raw[:80]}")
+
+    if tool_calls:
+        log(f"  Parsed {len(tool_calls)} tagged tool call(s)")
+        return tool_calls
+
+    # 3) Final fallback: bare JSON call object in plain text.
+    for bare_match in re.finditer(
+        r'\{"(?:name|function)"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{.*?\}\s*\}',
+        text,
+        re.DOTALL,
+    ):
+        raw = bare_match.group(0)
+        try:
+            data = json.loads(raw)
+            name = data.get("name") or data.get("function", "")
+            if not name:
+                continue
+            args = data.get("arguments") or data.get("parameters", {})
+            if isinstance(args, str):
+                args = json.loads(args)
+            tool_calls.append({
+                "type": "tool_use",
+                "id": f"toolu_{uuid.uuid4().hex[:20]}",
+                "name": name,
+                "input": args if isinstance(args, dict) else {},
+            })
+        except (json.JSONDecodeError, ValueError, TypeError):
+            log(f"  Warning: failed to parse bare tool call JSON: {raw[:80]}")
+
+    if tool_calls:
+        log(f"  Parsed {len(tool_calls)} bare JSON tool call(s)")
+
     return tool_calls
 
 
@@ -129,9 +216,11 @@ def extract_text_and_tools(raw_text):
     """
     # Parse from raw FIRST so tool calls inside any <think> block are captured.
     tool_calls = parse_tool_calls(raw_text)
-    # Clean the visible text: strip think tags, remove tool call XML, etc.
+    # Clean the visible text: strip think tags, remove tool call markup, etc.
     text = clean_response(raw_text)
-    clean_text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL).strip()
+    clean_text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
+    clean_text = re.sub(r'<function=[A-Za-z0-9_\-]+>\s*.*?\s*</function>', '', clean_text, flags=re.DOTALL)
+    clean_text = clean_text.strip()
     return clean_text, tool_calls
 
 
