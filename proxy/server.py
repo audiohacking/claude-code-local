@@ -452,9 +452,17 @@ def generate_response(body):
 # ─── Streaming Response (SSE) ────────────────────────────────────────────────
 
 def send_sse(handler, event_type, data):
-    """Write one SSE event and flush immediately."""
-    handler.wfile.write(f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode())
-    handler.wfile.flush()
+    """Write one SSE event and flush immediately.
+
+    Returns True when data was written, False when the client has disconnected.
+    """
+    try:
+        handler.wfile.write(f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode())
+        handler.wfile.flush()
+        return True
+    except (BrokenPipeError, ConnectionResetError):
+        log(f"  Client disconnected during SSE ({event_type})")
+        return False
 
 
 def generate_response_stream(handler, body):
@@ -475,7 +483,7 @@ def generate_response_stream(handler, body):
         finish_reason = "tool_use"
 
     # ── message_start ──────────────────────────────────────────────────
-    send_sse(handler, "message_start", {
+    if not send_sse(handler, "message_start", {
         "type": "message_start",
         "message": {
             "id": msg_id,
@@ -487,8 +495,10 @@ def generate_response_stream(handler, body):
             "stop_sequence": None,
             "usage": {"input_tokens": prompt_tokens, "output_tokens": 0},
         },
-    })
-    send_sse(handler, "ping", {"type": "ping"})
+    }):
+        return
+    if not send_sse(handler, "ping", {"type": "ping"}):
+        return
 
     block_index = 0
 
@@ -500,25 +510,28 @@ def generate_response_stream(handler, body):
         text_to_emit = ""
     else:
         text_to_emit = "(No output)"
-    send_sse(handler, "content_block_start", {
+    if not send_sse(handler, "content_block_start", {
         "type": "content_block_start",
         "index": block_index,
         "content_block": {"type": "text", "text": ""},
-    })
-    send_sse(handler, "content_block_delta", {
+    }):
+        return
+    if not send_sse(handler, "content_block_delta", {
         "type": "content_block_delta",
         "index": block_index,
         "delta": {"type": "text_delta", "text": text_to_emit},
-    })
-    send_sse(handler, "content_block_stop", {
+    }):
+        return
+    if not send_sse(handler, "content_block_stop", {
         "type": "content_block_stop",
         "index": block_index,
-    })
+    }):
+        return
     block_index += 1
 
     # ── tool_use blocks ────────────────────────────────────────────────
     for tc in tool_calls:
-        send_sse(handler, "content_block_start", {
+        if not send_sse(handler, "content_block_start", {
             "type": "content_block_start",
             "index": block_index,
             "content_block": {
@@ -527,28 +540,33 @@ def generate_response_stream(handler, body):
                 "name": tc["name"],
                 "input": {},
             },
-        })
-        send_sse(handler, "content_block_delta", {
+        }):
+            return
+        if not send_sse(handler, "content_block_delta", {
             "type": "content_block_delta",
             "index": block_index,
             "delta": {
                 "type": "input_json_delta",
                 "partial_json": json.dumps(tc["input"]),
             },
-        })
-        send_sse(handler, "content_block_stop", {
+        }):
+            return
+        if not send_sse(handler, "content_block_stop", {
             "type": "content_block_stop",
             "index": block_index,
-        })
+        }):
+            return
         block_index += 1
 
     # ── message_delta + message_stop ───────────────────────────────────
-    send_sse(handler, "message_delta", {
+    if not send_sse(handler, "message_delta", {
         "type": "message_delta",
         "delta": {"stop_reason": finish_reason, "stop_sequence": None},
         "usage": {"output_tokens": gen_tokens},
-    })
-    send_sse(handler, "message_stop", {"type": "message_stop"})
+    }):
+        return
+    if not send_sse(handler, "message_stop", {"type": "message_stop"}):
+        return
 
     preview = (clean_text or (tool_calls[0]["name"] if tool_calls else "(empty)"))[:80]
     log(f"  ← OK STREAM ({gen_tokens} tok) {preview}...")
