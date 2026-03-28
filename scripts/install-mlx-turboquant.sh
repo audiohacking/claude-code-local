@@ -27,8 +27,9 @@
 #   MLX_TURBOQUANT_REF      default feature/turboquant-kv-cache
 #   MLX_TURBOQUANT_EDITABLE set to 1 for editable clone + pip install -e
 #   CMAKE_BUILD_PARALLEL_LEVEL  default 8 (MLX setup.py uses -jCPU_COUNT if unset — can OOM)
-#   MLX_TURBOQUANT_NO_ISOLATION  set to 1 for pip --no-build-isolation (uses your venv cmake)
-#   MLX_TURBOQUANT_VERBOSE       set to 1 for pip -v (full compiler errors)
+#   MLX_TURBOQUANT_NO_ISOLATION  default 1 (--no-build-isolation: use venv + brew cmake; avoids flaky pip-build-env)
+#                                set to 0 to use pip's isolated build env only
+#   MLX_TURBOQUANT_VERBOSE       set to 1 for pip -v and CMAKE_VERBOSE_MAKEFILE (shows real compile error)
 #   MLX_TURBOQUANT_PYTHON        path to venv python3 (optional if VIRTUAL_ENV is set)
 
 set -euo pipefail
@@ -59,17 +60,28 @@ export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-8}"
 # Prefer Homebrew cmake/ninja if installed
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+# Default: build outside pip's isolated overlay (your log showed failures under pip-build-env-*/overlay).
+MLX_TURBOQUANT_NO_ISOLATION="${MLX_TURBOQUANT_NO_ISOLATION:-1}"
+
+if [[ "${MLX_TURBOQUANT_VERBOSE:-0}" == "1" ]]; then
+  export CMAKE_ARGS="${CMAKE_ARGS:-} -DCMAKE_VERBOSE_MAKEFILE=ON"
+fi
+
 PIP=("$PY" -m pip install)
 if [[ "${MLX_TURBOQUANT_VERBOSE:-0}" == "1" ]]; then
   PIP+=(-v)
 fi
-if [[ "${MLX_TURBOQUANT_NO_ISOLATION:-0}" == "1" ]]; then
+if [[ "${MLX_TURBOQUANT_NO_ISOLATION}" == "1" ]]; then
   PIP+=(--no-build-isolation)
 fi
 
 echo "==> Using Python: $PY"
+echo "==> pip build isolation: $([[ "${MLX_TURBOQUANT_NO_ISOLATION}" == "1" ]] && echo off || echo on)"
 echo "==> Removing broken / partial mlx installs (if any)..."
 "$PY" -m pip uninstall -y mlx mlx-metal 2>/dev/null || true
+
+echo "==> Build prerequisites in venv (needed for --no-build-isolation)..."
+"$PY" -m pip install --upgrade pip setuptools wheel 'cmake>=3.25' ninja
 
 if [[ "${MLX_TURBOQUANT_EDITABLE:-0}" == "1" ]]; then
   CLONE_ROOT="${MLX_TURBOQUANT_CLONE:-${TMPDIR:-/tmp}/mlx-turboquant}"
@@ -77,12 +89,10 @@ if [[ "${MLX_TURBOQUANT_EDITABLE:-0}" == "1" ]]; then
   rm -rf "${CLONE_ROOT}"
   git clone --depth 1 --branch "${REF}" "${REPO}" "${CLONE_ROOT}"
   echo "==> Editable install (CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL})..."
-  "$PY" -m pip install --upgrade pip setuptools wheel
   "${PIP[@]}" -e "${CLONE_ROOT}"
 else
   echo "==> Installing MLX from git ${REPO} @ ${REF}"
   echo "    (parallelism: CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL})"
-  "$PY" -m pip install --upgrade pip setuptools wheel
   "${PIP[@]}" "git+${REPO}@${REF}"
 fi
 
@@ -96,5 +106,6 @@ echo ""
 echo "If pip install mlx-lm overwrites mlx, re-pin:"
 echo "  \"$PY\" -m pip install --force-reinstall --no-deps \"git+${REPO}@${REF}\""
 echo ""
-echo "If build still fails: MLX_TURBOQUANT_VERBOSE=1 MLX_TURBOQUANT_NO_ISOLATION=1 ./scripts/install-mlx-turboquant.sh"
-echo "and scroll up for the first C++ / Metal error above 'Error 2'."
+echo "If build still fails, capture the real compiler line:"
+echo "  MLX_TURBOQUANT_VERBOSE=1 ./scripts/install-mlx-turboquant.sh 2>&1 | tee /tmp/mlx-build.log"
+echo "Then search the log for 'error:' above the final 'Error 2'."
