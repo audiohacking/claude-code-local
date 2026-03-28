@@ -575,12 +575,18 @@ def generate_response_stream(handler, body):
 # ─── HTTP Handler ────────────────────────────────────────────────────────────
 
 def send_json(handler, status, data):
+    """Write JSON response. Returns False if the client disconnected mid-write."""
     resp = json.dumps(data).encode()
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", len(resp))
-    handler.end_headers()
-    handler.wfile.write(resp)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", len(resp))
+        handler.end_headers()
+        handler.wfile.write(resp)
+        return True
+    except (BrokenPipeError, ConnectionResetError):
+        log(f"  Client disconnected during JSON response (status={status})")
+        return False
 
 
 def get_path(full_path):
@@ -626,12 +632,16 @@ class AnthropicHandler(BaseHTTPRequestHandler):
             else:
                 try:
                     result = generate_response(body)
-                    send_json(self, 200, result)
+                    if not send_json(self, 200, result):
+                        pass  # client left; nothing to send
+                except (BrokenPipeError, ConnectionResetError) as e:
+                    log(f"  Client disconnected: {e}")
                 except Exception as e:
                     log(f"  ← ERROR: {e}")
                     import traceback
                     traceback.print_exc(file=sys.stderr)
-                    send_json(self, 500, {"error": {"type": "server_error", "message": str(e)}})
+                    if not send_json(self, 500, {"error": {"type": "server_error", "message": str(e)}}):
+                        pass
         else:
             log(f"  Unknown POST: {path}")
             send_json(self, 200, {})
