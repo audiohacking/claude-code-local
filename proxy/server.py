@@ -95,6 +95,30 @@ def clean_response(text):
     return text
 
 
+def approx_think_visible_token_counts(full_text, tok):
+    """Approximate thinking vs non-thinking output tokens for logs only.
+
+    MLX ``generation_tokens`` already counts everything; this splits the final
+    string the same way as ``strip_think_tags`` and tokenizes each part so logs
+    can show think vs visible. Substring tokenization can differ slightly from
+    true generation boundaries (BPE), but it is cheap and close enough for perf.
+    """
+    if not full_text or tok is None:
+        return 0, 0
+    think_chunks = []
+    for m in re.finditer(r"<think>(.*?)</think>", full_text, flags=re.DOTALL):
+        think_chunks.append(m.group(1))
+    thinking = "".join(think_chunks)
+    # Orphan: model started inside a think block (no opening tag)
+    if "</think>" in full_text and not full_text.lstrip().startswith("<think>"):
+        i = full_text.index("</think>")
+        thinking = full_text[:i] + thinking
+    visible = strip_think_tags(full_text)
+    nt = len(tok.encode(thinking)) if thinking.strip() else 0
+    nv = len(tok.encode(visible)) if visible.strip() else 0
+    return nt, nv
+
+
 # ─── Tool Call Parsing ───────────────────────────────────────────────────────
 
 def parse_tool_calls(text):
@@ -409,7 +433,11 @@ def run_generation(body):
 
     elapsed = time.time() - t0
     tps = gen_tokens / elapsed if elapsed > 0 else 0
-    log(f"  Generated: {gen_tokens} tokens in {elapsed:.1f}s ({tps:.1f} tok/s)")
+    think_tok, vis_tok = approx_think_visible_token_counts(full_text, tokenizer)
+    log(
+        f"  Generated: {gen_tokens} tok total in {elapsed:.1f}s ({tps:.1f} tok/s) "
+        f"(think≈{think_tok} visible≈{vis_tok})"
+    )
     log(f"  Raw output ({len(full_text)} chars): {repr(full_text[:500])}")
     return full_text, gen_tokens, prompt_tokens, finish_reason
 
