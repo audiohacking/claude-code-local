@@ -11,9 +11,14 @@
 # above that. Use a verbose build:
 #   MLX_TURBOQUANT_VERBOSE=1 ./scripts/install-mlx-turboquant.sh
 #
-# Usage:
-#   python3 -m venv ~/.local/mlx-turboquant && source ~/.local/mlx-turboquant/bin/activate
+# Usage (must use a venv — Homebrew / system Python is "externally managed" and will refuse pip):
+#   python3 -m venv ~/.local/mlx-turboquant
+#   source ~/.local/mlx-turboquant/bin/activate
 #   ./scripts/install-mlx-turboquant.sh
+#
+# Or without activating (explicit interpreter):
+#   MLX_TURBOQUANT_PYTHON="$HOME/.local/mlx-turboquant/bin/python3" ./scripts/install-mlx-turboquant.sh
+#
 #   pip install mlx-lm
 #   cd /path/to/claude-code-local && ~/.local/mlx-turboquant/bin/python3 proxy/server.py
 #
@@ -24,8 +29,26 @@
 #   CMAKE_BUILD_PARALLEL_LEVEL  default 8 (MLX setup.py uses -jCPU_COUNT if unset — can OOM)
 #   MLX_TURBOQUANT_NO_ISOLATION  set to 1 for pip --no-build-isolation (uses your venv cmake)
 #   MLX_TURBOQUANT_VERBOSE       set to 1 for pip -v (full compiler errors)
+#   MLX_TURBOQUANT_PYTHON        path to venv python3 (optional if VIRTUAL_ENV is set)
 
 set -euo pipefail
+
+if [[ -n "${MLX_TURBOQUANT_PYTHON:-}" ]]; then
+  PY="${MLX_TURBOQUANT_PYTHON}"
+elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PY="${VIRTUAL_ENV}/bin/python3"
+else
+  echo "ERROR: Install must run inside a virtualenv (PEP 668 blocks pip on Homebrew Python)."
+  echo "  source ~/.local/mlx-turboquant/bin/activate"
+  echo "Or set:"
+  echo "  MLX_TURBOQUANT_PYTHON=\"\$HOME/.local/mlx-turboquant/bin/python3\" $0"
+  exit 1
+fi
+
+if [[ ! -x "$PY" ]]; then
+  echo "ERROR: Not executable: $PY"
+  exit 1
+fi
 
 REPO="${MLX_TURBOQUANT_REPO:-https://github.com/arozanov/mlx.git}"
 REF="${MLX_TURBOQUANT_REF:-feature/turboquant-kv-cache}"
@@ -36,7 +59,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-8}"
 # Prefer Homebrew cmake/ninja if installed
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
-PIP=(python3 -m pip install)
+PIP=("$PY" -m pip install)
 if [[ "${MLX_TURBOQUANT_VERBOSE:-0}" == "1" ]]; then
   PIP+=(-v)
 fi
@@ -44,8 +67,9 @@ if [[ "${MLX_TURBOQUANT_NO_ISOLATION:-0}" == "1" ]]; then
   PIP+=(--no-build-isolation)
 fi
 
+echo "==> Using Python: $PY"
 echo "==> Removing broken / partial mlx installs (if any)..."
-python3 -m pip uninstall -y mlx mlx-metal 2>/dev/null || true
+"$PY" -m pip uninstall -y mlx mlx-metal 2>/dev/null || true
 
 if [[ "${MLX_TURBOQUANT_EDITABLE:-0}" == "1" ]]; then
   CLONE_ROOT="${MLX_TURBOQUANT_CLONE:-${TMPDIR:-/tmp}/mlx-turboquant}"
@@ -53,24 +77,24 @@ if [[ "${MLX_TURBOQUANT_EDITABLE:-0}" == "1" ]]; then
   rm -rf "${CLONE_ROOT}"
   git clone --depth 1 --branch "${REF}" "${REPO}" "${CLONE_ROOT}"
   echo "==> Editable install (CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL})..."
-  python3 -m pip install --upgrade pip setuptools wheel
+  "$PY" -m pip install --upgrade pip setuptools wheel
   "${PIP[@]}" -e "${CLONE_ROOT}"
 else
   echo "==> Installing MLX from git ${REPO} @ ${REF}"
   echo "    (parallelism: CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL})"
-  python3 -m pip install --upgrade pip setuptools wheel
+  "$PY" -m pip install --upgrade pip setuptools wheel
   "${PIP[@]}" "git+${REPO}@${REF}"
 fi
 
 echo "==> Verifying mlx.core (required for proxy/server.py)..."
-python3 -c "import mlx; import mlx.core as mx; print('OK mlx', getattr(mlx, '__version__', '?'), mx.__name__)"
+"$PY" -c "import mlx; import mlx.core as mx; print('OK mlx', getattr(mlx, '__version__', '?'), mx.__name__)"
 
 echo ""
 echo "Run server from repo root:"
 echo "  ~/.local/mlx-turboquant/bin/python3 proxy/server.py"
 echo ""
 echo "If pip install mlx-lm overwrites mlx, re-pin:"
-echo "  python3 -m pip install --force-reinstall --no-deps \"git+${REPO}@${REF}\""
+echo "  \"$PY\" -m pip install --force-reinstall --no-deps \"git+${REPO}@${REF}\""
 echo ""
 echo "If build still fails: MLX_TURBOQUANT_VERBOSE=1 MLX_TURBOQUANT_NO_ISOLATION=1 ./scripts/install-mlx-turboquant.sh"
 echo "and scroll up for the first C++ / Metal error above 'Error 2'."
