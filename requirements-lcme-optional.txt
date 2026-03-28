@@ -1,0 +1,12 @@
+# Optional: long-term conversational memory for the MLX server.
+# Project: https://github.com/gschaidergabriel/lcme
+#
+# Install in the SAME venv you use for proxy/server.py, then:
+#   export LCME_ENABLED=1
+#   # optional: export LCME_DATA_DIR=~/.lcme/data
+#   python3 proxy/server.py
+#
+# Note: pulls PyTorch + sentence-transformers (separate from MLX). On Apple
+# Silicon this adds significant RAM and may contend with Metal for the big LM.
+
+lcme>=1.0.0

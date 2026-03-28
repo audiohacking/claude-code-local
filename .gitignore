@@ -7,3 +7,6 @@ __pycache__/
 *.part
 *.tmp
 .claude/
+
+# Vendored clones for local exploration (not part of releases)
+vendor/

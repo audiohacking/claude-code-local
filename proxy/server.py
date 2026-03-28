@@ -8,6 +8,9 @@ Supports full Claude Code feature set:
   - Tool calling (function calling) via Qwen's <tool_call> format
   - SSE streaming (stream: true) for real-time token delivery
   - Tool result messages (role: "tool") passed back via chat template
+
+Optional long-term memory (LCME): set LCME_ENABLED=1 and install extras
+(see requirements-lcme-optional.txt). Retrieves context into the system prompt.
 """
 
 import json
@@ -24,6 +27,12 @@ import mlx.core as mx
 from mlx_lm.utils import load
 from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
+
+try:
+    from lcme_bridge import maybe_enrich_request_with_lcme
+except ImportError:
+    def maybe_enrich_request_with_lcme(_body):
+        pass
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -614,6 +623,11 @@ class AnthropicHandler(BaseHTTPRequestHandler):
             f"tools={len(body.get('tools') or [])}")
 
         if path in ("/v1/messages", "/messages"):
+            try:
+                maybe_enrich_request_with_lcme(body)
+            except Exception as e:
+                log(f"  LCME bridge error: {e}")
+
             if streaming:
                 try:
                     # Close connection after SSE events so HTTP/1.1 clients
