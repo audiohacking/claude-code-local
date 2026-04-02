@@ -186,6 +186,20 @@ claude --model claude-sonnet-4-6
 
 > 💡 **Or just double-click** `Claude Local.command` on your Desktop. It does all of this automatically.
 
+### Gemma 4 31B IT (`gemma` branch)
+
+Use the [`gemma`](https://github.com/audiohacking/claude-code-local/tree/gemma) branch for [Gemma 4 31B Instruct](https://huggingface.co/google/gemma-4-31B-it). MLX loads the **mlx-community** conversion (same model family; not the raw `transformers` checkpoint).
+
+```bash
+git checkout gemma
+# Optional: 4bit (default), 8bit, bf16, mxfp4, …
+export MLX_GEMMA_VARIANT=4bit
+~/.local/mlx-server/bin/python3 ./scripts/download-gemma4-31b-it-mlx.sh
+~/.local/mlx-server/bin/python3 proxy/server.py
+```
+
+Override the Hub id explicitly anytime: `export MLX_MODEL=mlx-community/gemma-4-31b-it-8bit`
+
 ---
 
 ## 🔧 How It Works

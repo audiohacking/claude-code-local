@@ -8,6 +8,9 @@ Supports full Claude Code feature set:
   - Tool calling (function calling) via Qwen's <tool_call> format
   - SSE streaming (stream: true) for real-time token delivery
   - Tool result messages (role: "tool") passed back via chat template
+
+Gemma branch default: Google Hub id google/gemma-4-31B-it is loaded via MLX-converted weights
+(mlx-community/gemma-4-31b-it-*). Override with MLX_MODEL or MLX_GEMMA_VARIANT (see Configuration).
 """
 
 import json
@@ -26,8 +29,36 @@ from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
 
 # ─── Configuration ───────────────────────────────────────────────────────────
+# Upstream reference: https://huggingface.co/google/gemma-4-31B-it
+# MLX weights (mlx-lm load): https://huggingface.co/mlx-community/gemma-4-31b-it-4bit (and variants)
+_GEMMA4_31B_IT_MLX = {
+    "4bit": "mlx-community/gemma-4-31b-it-4bit",
+    "5bit": "mlx-community/gemma-4-31b-it-5bit",
+    "6bit": "mlx-community/gemma-4-31b-it-6bit",
+    "8bit": "mlx-community/gemma-4-31b-it-8bit",
+    "bf16": "mlx-community/gemma-4-31b-it-bf16",
+    "mxfp4": "mlx-community/gemma-4-31b-it-mxfp4",
+    "mxfp8": "mlx-community/gemma-4-31b-it-mxfp8",
+    "nvfp4": "mlx-community/gemma-4-31b-it-nvfp4",
+}
 
-MODEL_PATH = os.environ.get("MLX_MODEL", "mlx-community/Qwen3.5-122B-A10B-4bit")
+
+def _resolve_model_path() -> str:
+    explicit = os.environ.get("MLX_MODEL", "").strip()
+    if explicit:
+        return explicit
+    variant = os.environ.get("MLX_GEMMA_VARIANT", "4bit").lower().strip()
+    if variant not in _GEMMA4_31B_IT_MLX:
+        print(
+            f"[config] Unknown MLX_GEMMA_VARIANT={variant!r}, using 4bit",
+            file=sys.stderr,
+            flush=True,
+        )
+        variant = "4bit"
+    return _GEMMA4_31B_IT_MLX[variant]
+
+
+MODEL_PATH = _resolve_model_path()
 PORT = int(os.environ.get("MLX_PORT", "4000"))
 KV_BITS = int(os.environ.get("MLX_KV_BITS", "4"))
 PREFILL_SIZE = int(os.environ.get("MLX_PREFILL_SIZE", "4096"))
@@ -660,7 +691,7 @@ class AnthropicHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print("╔══════════════════════════════════════════════════╗")
     print("║  MLX Native Anthropic Server                    ║")
-    print("║  Claude Code → MLX → Apple Silicon (direct)     ║")
+    print("║  Claude Code → MLX → Apple Silicon (Gemma 4)    ║")
     print("╚══════════════════════════════════════════════════╝")
     print()
 
